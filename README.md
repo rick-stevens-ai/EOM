@@ -17,7 +17,7 @@ A powerful suite of AI-powered tools for extracting, analyzing, and processing s
   - Workflow calculus notation generation
   - Automated protocol mapping for robotics/AGI
   - Open problems and research gaps extraction
-  - Knowledge graph extraction with RDF output
+  - Knowledge graph extraction with RDF output and connectivity optimization
 
 ### Advanced Processing
 - **Rich UI** with progress tracking and visual feedback
@@ -27,7 +27,7 @@ A powerful suite of AI-powered tools for extracting, analyzing, and processing s
 - **Token-based and character-based** intelligent chunking
 - **Document classification** and filtering
 - **Protocol consolidation** for experimental_protocol mode
-- **Knowledge graph RDF generation** with semantic relationships
+- **Knowledge graph RDF generation** with semantic relationships and connectivity optimization
 
 ### Analysis Pipeline
 - **Dataset summarization** from extraction results
@@ -131,7 +131,7 @@ python run_pipeline.py \
 - `bvbrc_mapping` - Map problems to BV-BRC tools
 - `workflow_calculus` - Generate workflow calculus notation
 - `open_problems` - Extract research gaps and future work directions
-- `knowledge_graph` - Extract semantic relationships and generate RDF output
+- `knowledge_graph` - Extract semantic relationships with connectivity optimization and generate RDF output
 
 ### Model Configuration
 Edit `model_servers.yaml` to configure AI models:
@@ -175,7 +175,10 @@ python extract-o-matic.py papers/ \
 
 ### Knowledge Graph Output
 - **RDF files** with semantic relationships in standard format
+- **Connectivity optimization** to eliminate isolated nodes
+- **Cross-chunk relationship detection** for better graph connectivity
 - Entity-relationship triples with confidence scores
+- **Connectivity metrics** displayed during processing
 - Compatible with graph databases and semantic web tools
 - Timestamped outputs for version tracking
 
