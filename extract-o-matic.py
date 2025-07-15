@@ -10,10 +10,12 @@ This script combines the best features from multiple extraction scripts:
 - Knowledge graph extraction from graph-o-matic.py (graph-o-matic.py is now deprecated)
 
 Features:
-- 11 extraction modes including new knowledge_graph mode
+- 11 extraction modes including enhanced knowledge_graph mode
 - Enhanced experimental_protocol mode with post-processing consolidation
 - RDF output generation for knowledge graphs
 - Semantic relationship extraction with confidence scoring
+- Knowledge graph connectivity optimization (eliminates isolated nodes)
+- Cross-chunk relationship detection for better graph connectivity
 - Open problems extraction with structured JSON output
 - Parallel processing and batch mode support
 
@@ -744,15 +746,17 @@ Text:
 {chunk_text}"""
     
     def _get_knowledge_graph_prompt(self, chunk_text: str, chunk_idx: int, total_chunks: int) -> str:
-        """Generate knowledge graph extraction prompt for RDF output."""
+        """Generate knowledge graph extraction prompt for RDF output with connectivity focus."""
         return f"""Please analyze the following scientific text (part {chunk_idx + 1} of {total_chunks}) and extract a knowledge graph representing the key entities, relationships, and concepts mentioned.
 
 **CRITICAL REQUIREMENTS:**
-1. **Extract ALL entities**: Identify genes, proteins, organisms, methods, tools, databases, diseases, phenotypes, pathways, compounds, etc.
-2. **Extract relationships**: Identify how entities relate to each other (e.g., "gene encodes protein", "protein interacts with protein", "method analyzes data")
-3. **Use standard terminology**: When possible, use standard names and identifiers from relevant ontologies/databases
-4. **Provide context**: Include the experimental or analytical context for relationships
-5. **Format as structured triples**: Organize as Subject-Predicate-Object relationships
+1. **PRIORITIZE CONNECTIVITY**: Focus on relationships between entities rather than isolated descriptions. Every entity should be connected to at least one other entity through a relationship.
+2. **Extract ALL entities**: Identify genes, proteins, organisms, methods, tools, databases, diseases, phenotypes, pathways, compounds, etc.
+3. **Extract relationships**: Identify how entities relate to each other (e.g., "gene encodes protein", "protein interacts with protein", "method analyzes data")
+4. **Use standard terminology**: When possible, use standard names and identifiers from relevant ontologies/databases
+5. **Provide context**: Include the experimental or analytical context for relationships
+6. **Format as structured triples**: Organize as Subject-Predicate-Object relationships
+7. **AVOID ISOLATED NODES**: Do not list entities without relationships. If an entity is mentioned, find its connections to other entities.
 
 **For each entity-relationship-entity triple, provide:**
 
@@ -792,12 +796,15 @@ For each relationship, use this exact structure:
 - **Source:** [Location in text where this relationship was identified]
 
 **IMPORTANT NOTES:**
+- **CONNECTIVITY IS PARAMOUNT**: Every entity must be connected to at least one other entity. Do not extract isolated entities.
 - Focus on factual relationships explicitly stated or strongly implied in the text
 - Include both direct experimental findings and methodological relationships
 - For ambiguous relationships, mark confidence as Low but still include them
 - Use standardized entity names when possible (e.g., official gene symbols, standard method names)
 - Include quantitative relationships when measurements are provided
 - Consider temporal relationships (before/after, during, following)
+- **Look for indirect connections**: If entities seem unrelated, consider methodological or contextual connections
+- **Prefer connected subgraphs**: Create clusters of related entities rather than scattered individual relationships
 
 Text:
 {chunk_text}"""
@@ -833,6 +840,170 @@ Please provide a consolidated summary of all unique experimental protocols menti
         except Exception as e:
             self.console.print(f"⚠️  Failed to consolidate protocols: {e}")
             return results
+    
+    def _consolidate_knowledge_graph(self, results: List[str]) -> List[str]:
+        """Consolidate knowledge graph results to improve connectivity and remove isolated nodes."""
+        if self.config.mode != ExtractionMode.KNOWLEDGE_GRAPH:
+            return results
+            
+        # Combine all results into a single text
+        combined_results = "\n\n".join(results)
+        
+        # Create consolidation prompt focused on connectivity
+        consolidation_prompt = f"""Please analyze the following knowledge graph extractions from different sections of a research paper and create a consolidated, well-connected knowledge graph.
+
+**CRITICAL CONSOLIDATION TASKS:**
+1. **ELIMINATE ISOLATED NODES**: Remove or connect any entities that appear without relationships
+2. **MERGE DUPLICATE ENTITIES**: Combine similar or identical entities mentioned in different sections
+3. **DISCOVER IMPLICIT CONNECTIONS**: Look for relationships between entities that appear in different sections but are related through the research context
+4. **CREATE CONNECTED SUBGRAPHS**: Organize entities into connected clusters rather than scattered individual relationships
+5. **STANDARDIZE ENTITY NAMES**: Use consistent naming for the same entities across sections
+6. **MAINTAIN RELATIONSHIP QUALITY**: Preserve confidence scores and evidence, but improve connectivity
+
+**CONNECTIVITY IMPROVEMENT STRATEGIES:**
+- Look for methodological connections (e.g., "Method X analyzes Entity Y")
+- Find contextual relationships (e.g., entities used in the same experimental context)
+- Identify hierarchical relationships (e.g., "Gene X part_of Pathway Y")
+- Connect through intermediate entities (e.g., "Gene X encodes Protein Y, Protein Y interacts_with Protein Z")
+- Link through experimental conditions or datasets
+
+**OUTPUT REQUIREMENTS:**
+- Every entity should have at least one relationship
+- Create a connected graph where you can navigate from any entity to others
+- Maintain the structured triple format with confidence scores
+- Remove any standalone entity descriptions
+- Prioritize the most confident and well-supported relationships
+
+Here are the knowledge graph extractions to consolidate and connect:
+
+{combined_results}
+
+Please provide a consolidated, well-connected knowledge graph where every entity is connected to at least one other entity:"""
+
+        try:
+            self.console.print("🔄 Consolidating knowledge graph for connectivity...")
+            consolidated_result = self._call_api(consolidation_prompt)
+            return [consolidated_result]
+        except Exception as e:
+            self.console.print(f"⚠️  Failed to consolidate knowledge graph: {e}")
+            return results
+    
+    def _extract_cross_chunk_relationships(self, results: List[str]) -> str:
+        """Extract relationships between entities mentioned in different chunks."""
+        if len(results) < 2:
+            return ""
+            
+        # Extract entity names from all chunks
+        all_entities = set()
+        chunk_entities = []
+        
+        for result in results:
+            entities_in_chunk = set()
+            lines = result.split('\n')
+            for line in lines:
+                if '**Subject:**' in line:
+                    # Extract entity name from subject line
+                    entity_match = re.search(r'\*\*Subject:\*\*\s*([^(]+)', line)
+                    if entity_match:
+                        entity = entity_match.group(1).strip()
+                        all_entities.add(entity)
+                        entities_in_chunk.add(entity)
+                elif '**Object:**' in line:
+                    # Extract entity name from object line
+                    entity_match = re.search(r'\*\*Object:\*\*\s*([^(]+)', line)
+                    if entity_match:
+                        entity = entity_match.group(1).strip()
+                        all_entities.add(entity)
+                        entities_in_chunk.add(entity)
+            chunk_entities.append(entities_in_chunk)
+        
+        # Find entities that appear in multiple chunks
+        cross_chunk_entities = set()
+        for i, chunk1_entities in enumerate(chunk_entities):
+            for j, chunk2_entities in enumerate(chunk_entities[i+1:], i+1):
+                common_entities = chunk1_entities.intersection(chunk2_entities)
+                cross_chunk_entities.update(common_entities)
+        
+        if not cross_chunk_entities:
+            return ""
+            
+        # Create prompt to find cross-chunk relationships
+        entity_list = ", ".join(sorted(cross_chunk_entities))
+        cross_chunk_prompt = f"""The following entities appear in multiple sections of the research paper: {entity_list}
+
+Please identify additional relationships between these entities that span across different sections of the paper. Look for:
+- Methodological connections (methods used to study multiple entities)
+- Experimental context connections (entities used in the same experiments)
+- Pathway or process connections (entities involved in the same biological processes)
+- Causal or temporal connections (entities in experimental sequences)
+
+Combined knowledge graph data:
+{chr(10).join(results)}
+
+Provide additional cross-section relationships in the same triple format:"""
+
+        try:
+            self.console.print("🔄 Extracting cross-chunk relationships...")
+            cross_chunk_result = self._call_api(cross_chunk_prompt)
+            return cross_chunk_result
+        except Exception as e:
+            self.console.print(f"⚠️  Failed to extract cross-chunk relationships: {e}")
+            return ""
+    
+    def _validate_graph_connectivity(self, knowledge_graph_text: str) -> Dict[str, Any]:
+        """Validate connectivity of the knowledge graph and provide metrics."""
+        lines = knowledge_graph_text.split('\n')
+        entities = set()
+        relationships = []
+        isolated_entities = set()
+        
+        current_triple = {}
+        for line in lines:
+            line = line.strip()
+            if '**Subject:**' in line:
+                subject_match = re.search(r'\*\*Subject:\*\*\s*([^(]+)', line)
+                if subject_match:
+                    current_triple['subject'] = subject_match.group(1).strip()
+                    entities.add(current_triple['subject'])
+            elif '**Object:**' in line:
+                object_match = re.search(r'\*\*Object:\*\*\s*([^(]+)', line)
+                if object_match:
+                    current_triple['object'] = object_match.group(1).strip()
+                    entities.add(current_triple['object'])
+            elif '**Predicate:**' in line:
+                predicate_match = re.search(r'\*\*Predicate:\*\*\s*(.+)', line)
+                if predicate_match:
+                    current_triple['predicate'] = predicate_match.group(1).strip()
+                    
+                    # If we have a complete triple, record it
+                    if 'subject' in current_triple and 'object' in current_triple:
+                        relationships.append(current_triple.copy())
+                        current_triple = {}
+        
+        # Find connected entities
+        connected_entities = set()
+        for rel in relationships:
+            if 'subject' in rel and 'object' in rel:
+                connected_entities.add(rel['subject'])
+                connected_entities.add(rel['object'])
+        
+        # Find isolated entities
+        isolated_entities = entities - connected_entities
+        
+        # Calculate connectivity metrics
+        total_entities = len(entities)
+        connected_count = len(connected_entities)
+        isolated_count = len(isolated_entities)
+        connectivity_ratio = connected_count / total_entities if total_entities > 0 else 0
+        
+        return {
+            'total_entities': total_entities,
+            'connected_entities': connected_count,
+            'isolated_entities': isolated_count,
+            'connectivity_ratio': connectivity_ratio,
+            'relationships_count': len(relationships),
+            'isolated_entity_list': list(isolated_entities)
+        }
     
     def _convert_to_rdf(self, knowledge_graph_text: str, source_file: str) -> str:
         """Convert knowledge graph text to RDF format."""
@@ -1862,13 +2033,35 @@ Here is the text:
         
         # Process knowledge graph if in knowledge_graph mode
         if self.config.mode == ExtractionMode.KNOWLEDGE_GRAPH:
-            # Combine all chunk results
+            # Step 1: Extract cross-chunk relationships
+            cross_chunk_relationships = self._extract_cross_chunk_relationships(results)
+            if cross_chunk_relationships:
+                results.append(cross_chunk_relationships)
+            
+            # Step 2: Consolidate for connectivity
+            results = self._consolidate_knowledge_graph(results)
+            
+            # Step 3: Combine all results
             combined_result = "\n\n".join(results)
             
-            # Convert to RDF format
+            # Step 4: Validate connectivity and show metrics
+            connectivity_metrics = self._validate_graph_connectivity(combined_result)
+            self.console.print(f"📊 Knowledge Graph Connectivity Metrics:")
+            self.console.print(f"   Total entities: {connectivity_metrics['total_entities']}")
+            self.console.print(f"   Connected entities: {connectivity_metrics['connected_entities']}")
+            self.console.print(f"   Isolated entities: {connectivity_metrics['isolated_entities']}")
+            self.console.print(f"   Connectivity ratio: {connectivity_metrics['connectivity_ratio']:.2%}")
+            self.console.print(f"   Total relationships: {connectivity_metrics['relationships_count']}")
+            
+            if connectivity_metrics['isolated_entities'] > 0:
+                self.console.print(f"⚠️  Isolated entities found: {', '.join(connectivity_metrics['isolated_entity_list'][:5])}")
+                if len(connectivity_metrics['isolated_entity_list']) > 5:
+                    self.console.print(f"   ... and {len(connectivity_metrics['isolated_entity_list']) - 5} more")
+            
+            # Step 5: Convert to RDF format
             rdf_content = self._convert_to_rdf(combined_result, self.config.input_file)
             
-            # Save RDF file
+            # Step 6: Save RDF file
             self._save_rdf_file(rdf_content, self.config.input_file)
             
             # Return the knowledge graph text
