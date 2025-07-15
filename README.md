@@ -17,7 +17,7 @@ A powerful suite of AI-powered tools for extracting, analyzing, and processing s
   - Workflow calculus notation generation
   - Automated protocol mapping for robotics/AGI
   - Open problems and research gaps extraction
-  - Knowledge graph extraction with RDF output and connectivity optimization
+  - Knowledge graph extraction with RDF output, connectivity optimization, and cross-paper integration
 
 ### Advanced Processing
 - **Rich UI** with progress tracking and visual feedback
@@ -27,7 +27,7 @@ A powerful suite of AI-powered tools for extracting, analyzing, and processing s
 - **Token-based and character-based** intelligent chunking
 - **Document classification** and filtering
 - **Protocol consolidation** for experimental_protocol mode
-- **Knowledge graph RDF generation** with semantic relationships and connectivity optimization
+- **Knowledge graph RDF generation** with semantic relationships, connectivity optimization, and cross-paper integration
 
 ### Analysis Pipeline
 - **Dataset summarization** from extraction results
@@ -89,6 +89,10 @@ python extract-o-matic.py paper.pdf --mode knowledge_graph --model gpt-4.1 --out
 ```bash
 # Process multiple papers
 python extract-o-matic.py papers/ --mode dataset_extraction --model gpt-4.1 --output results_dir/ --workers 4
+
+# Knowledge graph integration across multiple papers
+python extract-o-matic.py papers/ --mode knowledge_graph --model gpt-4.1 --output graphs_dir/ --workers 4
+# Creates individual paper graphs + integrated INTEGRATED_knowledge_graph file
 ```
 
 ### Complete Pipeline
@@ -131,7 +135,7 @@ python run_pipeline.py \
 - `bvbrc_mapping` - Map problems to BV-BRC tools
 - `workflow_calculus` - Generate workflow calculus notation
 - `open_problems` - Extract research gaps and future work directions
-- `knowledge_graph` - Extract semantic relationships with connectivity optimization and generate RDF output
+- `knowledge_graph` - Extract semantic relationships with connectivity optimization, cross-paper integration, and generate RDF output
 
 ### Model Configuration
 Edit `model_servers.yaml` to configure AI models:
@@ -177,10 +181,13 @@ python extract-o-matic.py papers/ \
 - **RDF files** with semantic relationships in standard format
 - **Connectivity optimization** to eliminate isolated nodes
 - **Cross-chunk relationship detection** for better graph connectivity
+- **Cross-paper integration** for batch processing (creates INTEGRATED_knowledge_graph files)
+- **Incremental graph merging** with robust entity deduplication
 - Entity-relationship triples with confidence scores
 - **Connectivity metrics** displayed during processing
 - Compatible with graph databases and semantic web tools
 - Timestamped outputs for version tracking
+- **Special naming** for integrated graphs with source paper tracking
 
 ## 🔧 Troubleshooting
 

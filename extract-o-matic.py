@@ -16,12 +16,15 @@ Features:
 - Semantic relationship extraction with confidence scoring
 - Knowledge graph connectivity optimization (eliminates isolated nodes)
 - Cross-chunk relationship detection for better graph connectivity
+- Cross-paper knowledge graph integration for batch processing
+- Incremental graph merging with robust entity deduplication
 - Open problems extraction with structured JSON output
 - Parallel processing and batch mode support
 
 Usage:
     python extract-o-matic.py input_file [options]
     python extract-o-matic.py paper.pdf --mode knowledge_graph --model gpt-4 --output graph.rdf
+    python extract-o-matic.py papers/ --mode knowledge_graph --model gpt-4 --output graphs_dir/
     python extract-o-matic.py paper.txt --mode experimental_protocol --model gpt-4 --output protocols.txt
 """
 
@@ -130,6 +133,7 @@ class ExtractOMatic:
         self.results = []
         self.results_lock = Lock()
         self.progress_lock = Lock()
+        self.paper_knowledge_graphs = []  # Store individual paper graphs for integration
         
         # Initialize OpenAI client
         self._initialize_client()
@@ -1004,6 +1008,332 @@ Provide additional cross-section relationships in the same triple format:"""
             'relationships_count': len(relationships),
             'isolated_entity_list': list(isolated_entities)
         }
+    
+    def _extract_entities_from_graph(self, knowledge_graph_text: str) -> Dict[str, Dict[str, Any]]:
+        """Extract entities and their attributes from a knowledge graph text."""
+        entities = {}
+        lines = knowledge_graph_text.split('\n')
+        
+        current_triple = {}
+        for line in lines:
+            line = line.strip()
+            if '**TRIPLE #' in line:
+                # Reset for new triple
+                current_triple = {}
+            elif '**Subject:**' in line:
+                subject_match = re.search(r'\*\*Subject:\*\*\s*([^(]+)(?:\(Type:\s*([^)]+)\))?', line)
+                if subject_match:
+                    entity_name = subject_match.group(1).strip()
+                    entity_type = subject_match.group(2).strip() if subject_match.group(2) else "unknown"
+                    current_triple['subject'] = entity_name
+                    current_triple['subject_type'] = entity_type
+                    
+                    # Initialize entity if not seen before
+                    if entity_name not in entities:
+                        entities[entity_name] = {
+                            'name': entity_name,
+                            'type': entity_type,
+                            'aliases': set([entity_name]),
+                            'relationships': [],
+                            'sources': set()
+                        }
+                    
+            elif '**Object:**' in line:
+                object_match = re.search(r'\*\*Object:\*\*\s*([^(]+)(?:\(Type:\s*([^)]+)\))?', line)
+                if object_match:
+                    entity_name = object_match.group(1).strip()
+                    entity_type = object_match.group(2).strip() if object_match.group(2) else "unknown"
+                    current_triple['object'] = entity_name
+                    current_triple['object_type'] = entity_type
+                    
+                    # Initialize entity if not seen before
+                    if entity_name not in entities:
+                        entities[entity_name] = {
+                            'name': entity_name,
+                            'type': entity_type,
+                            'aliases': set([entity_name]),
+                            'relationships': [],
+                            'sources': set()
+                        }
+                        
+            elif '**Predicate:**' in line:
+                predicate_match = re.search(r'\*\*Predicate:\*\*\s*(.+)', line)
+                if predicate_match:
+                    current_triple['predicate'] = predicate_match.group(1).strip()
+                    
+            elif '**Confidence:**' in line:
+                confidence_match = re.search(r'\*\*Confidence:\*\*\s*(.+)', line)
+                if confidence_match:
+                    current_triple['confidence'] = confidence_match.group(1).strip()
+                    
+            elif '**Evidence:**' in line:
+                evidence_match = re.search(r'\*\*Evidence:\*\*\s*(.+)', line)
+                if evidence_match:
+                    current_triple['evidence'] = evidence_match.group(1).strip()
+                    
+            elif '**Source:**' in line:
+                source_match = re.search(r'\*\*Source:\*\*\s*(.+)', line)
+                if source_match:
+                    current_triple['source'] = source_match.group(1).strip()
+                    
+                    # If we have a complete triple, add relationships
+                    if 'subject' in current_triple and 'object' in current_triple and 'predicate' in current_triple:
+                        # Add relationship to subject entity
+                        if current_triple['subject'] in entities:
+                            entities[current_triple['subject']]['relationships'].append({
+                                'predicate': current_triple['predicate'],
+                                'object': current_triple['object'],
+                                'confidence': current_triple.get('confidence', 'Medium'),
+                                'evidence': current_triple.get('evidence', ''),
+                                'source': current_triple.get('source', '')
+                            })
+                            entities[current_triple['subject']]['sources'].add(current_triple.get('source', ''))
+                        
+                        # Add reverse relationship to object entity
+                        if current_triple['object'] in entities:
+                            entities[current_triple['object']]['sources'].add(current_triple.get('source', ''))
+        
+        return entities
+    
+    def _normalize_entity_name(self, name: str) -> str:
+        """Normalize entity name for better matching."""
+        # Convert to lowercase and remove extra whitespace
+        normalized = re.sub(r'\s+', ' ', name.lower().strip())
+        
+        # Remove common prefixes/suffixes that might vary
+        normalized = re.sub(r'^(the|a|an)\s+', '', normalized)
+        normalized = re.sub(r'\s+(gene|protein|method|database|tool|algorithm)$', '', normalized)
+        
+        return normalized
+    
+    def _find_entity_matches(self, entity_name: str, existing_entities: Dict[str, Dict[str, Any]]) -> List[str]:
+        """Find potential matches for an entity in existing entities."""
+        matches = []
+        normalized_target = self._normalize_entity_name(entity_name)
+        
+        for existing_name, entity_data in existing_entities.items():
+            # Check exact match
+            if entity_name == existing_name:
+                matches.append(existing_name)
+                continue
+                
+            # Check normalized match
+            if normalized_target == self._normalize_entity_name(existing_name):
+                matches.append(existing_name)
+                continue
+                
+            # Check aliases
+            for alias in entity_data['aliases']:
+                if normalized_target == self._normalize_entity_name(alias):
+                    matches.append(existing_name)
+                    break
+                    
+            # Check partial matches for compound names
+            if len(normalized_target) > 5 and normalized_target in self._normalize_entity_name(existing_name):
+                matches.append(existing_name)
+            elif len(self._normalize_entity_name(existing_name)) > 5 and self._normalize_entity_name(existing_name) in normalized_target:
+                matches.append(existing_name)
+        
+        return matches
+    
+    def _merge_entities(self, primary_entity: Dict[str, Any], secondary_entity: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge two entities, keeping the most comprehensive information."""
+        merged = primary_entity.copy()
+        
+        # Merge aliases
+        merged['aliases'].update(secondary_entity['aliases'])
+        
+        # Merge relationships, avoiding duplicates
+        existing_relationships = {
+            (rel['predicate'], rel['object']) for rel in merged['relationships']
+        }
+        
+        for rel in secondary_entity['relationships']:
+            rel_key = (rel['predicate'], rel['object'])
+            if rel_key not in existing_relationships:
+                merged['relationships'].append(rel)
+                existing_relationships.add(rel_key)
+        
+        # Merge sources
+        merged['sources'].update(secondary_entity['sources'])
+        
+        # Use the more specific type if available
+        if secondary_entity['type'] != 'unknown' and merged['type'] == 'unknown':
+            merged['type'] = secondary_entity['type']
+        
+        return merged
+    
+    def _integrate_paper_graphs(self, paper_graphs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Integrate multiple paper knowledge graphs into a single unified graph."""
+        if not paper_graphs:
+            return {}
+            
+        self.console.print(f"🔗 Integrating {len(paper_graphs)} paper knowledge graphs...")
+        
+        integrated_entities = {}
+        
+        for graph_idx, paper_graph in enumerate(paper_graphs):
+            self.console.print(f"   Processing paper {graph_idx + 1}/{len(paper_graphs)}: {len(paper_graph)} entities")
+            
+            for entity_name, entity_data in paper_graph.items():
+                try:
+                    # Find potential matches in integrated graph
+                    matches = self._find_entity_matches(entity_name, integrated_entities)
+                    
+                    if matches:
+                        # Merge with the best match (first one found)
+                        primary_match = matches[0]
+                        integrated_entities[primary_match] = self._merge_entities(
+                            integrated_entities[primary_match], 
+                            entity_data
+                        )
+                        
+                        # Add current name as alias
+                        integrated_entities[primary_match]['aliases'].add(entity_name)
+                        
+                        # If there are multiple matches, merge them all
+                        for additional_match in matches[1:]:
+                            integrated_entities[primary_match] = self._merge_entities(
+                                integrated_entities[primary_match],
+                                integrated_entities[additional_match]
+                            )
+                            # Remove the merged entity
+                            del integrated_entities[additional_match]
+                            
+                    else:
+                        # No matches found, add as new entity
+                        integrated_entities[entity_name] = entity_data.copy()
+                        
+                except Exception as e:
+                    self.console.print(f"⚠️  Warning: Error merging entity '{entity_name}': {e}")
+                    # Add as new entity to avoid data loss
+                    if entity_name not in integrated_entities:
+                        integrated_entities[entity_name] = entity_data.copy()
+        
+        return integrated_entities
+    
+    def _consolidate_integrated_graph(self, integrated_entities: Dict[str, Dict[str, Any]]) -> str:
+        """Consolidate the integrated knowledge graph using LLM for final cleanup."""
+        if not integrated_entities:
+            return ""
+            
+        # Create a summary of the integrated graph
+        graph_summary = []
+        entity_count = len(integrated_entities)
+        total_relationships = sum(len(entity['relationships']) for entity in integrated_entities.values())
+        
+        graph_summary.append(f"# Integrated Knowledge Graph Summary")
+        graph_summary.append(f"Total entities: {entity_count}")
+        graph_summary.append(f"Total relationships: {total_relationships}")
+        graph_summary.append(f"Sources: {len(set().union(*[entity['sources'] for entity in integrated_entities.values() if entity['sources']]))}")
+        graph_summary.append("")
+        
+        # Convert back to triple format for LLM consolidation
+        triples = []
+        triple_num = 1
+        
+        for entity_name, entity_data in integrated_entities.items():
+            for rel in entity_data['relationships']:
+                triples.append(f"**TRIPLE #{triple_num}:**")
+                triples.append(f"- **Subject:** {entity_name} (Type: {entity_data['type']})")
+                triples.append(f"- **Predicate:** {rel['predicate']}")
+                triples.append(f"- **Object:** {rel['object']}")
+                triples.append(f"- **Confidence:** {rel['confidence']}")
+                triples.append(f"- **Evidence:** {rel['evidence']}")
+                triples.append(f"- **Source:** {rel['source']}")
+                triples.append("")
+                triple_num += 1
+        
+        consolidated_text = "\n".join(graph_summary + triples)
+        
+        # Use LLM to further consolidate and clean up
+        consolidation_prompt = f"""Please analyze and consolidate the following integrated knowledge graph from multiple research papers. This graph has already been computationally merged, but may benefit from additional cleanup and organization.
+
+**CONSOLIDATION TASKS:**
+1. **Remove duplicate or redundant relationships** that express the same information
+2. **Standardize entity names** to use the most common or official forms
+3. **Improve relationship quality** by combining similar predicates
+4. **Ensure connectivity** - verify all entities participate in relationships
+5. **Add implicit relationships** that can be inferred from existing ones
+6. **Organize by confidence** - prioritize high-confidence relationships
+
+**CURRENT INTEGRATED GRAPH:**
+{consolidated_text}
+
+Please provide a cleaned, consolidated version maintaining the same triple format but with improved organization and reduced redundancy:"""
+
+        try:
+            self.console.print("🔄 Final consolidation of integrated knowledge graph...")
+            consolidated_result = self._call_api(consolidation_prompt)
+            return consolidated_result
+        except Exception as e:
+            self.console.print(f"⚠️  Failed to consolidate integrated graph: {e}")
+            return consolidated_text
+    
+    def _process_knowledge_graph_integration(self) -> List[str]:
+        """Process the integration of all paper knowledge graphs."""
+        if not self.paper_knowledge_graphs:
+            return []
+            
+        self.console.print(f"🌐 Starting cross-paper knowledge graph integration...")
+        
+        # Step 1: Extract entities from all paper graphs
+        paper_entities = []
+        for paper_data in self.paper_knowledge_graphs:
+            entities = self._extract_entities_from_graph(paper_data['graph_text'])
+            paper_entities.append(entities)
+            
+        # Step 2: Integrate graphs incrementally
+        integrated_entities = self._integrate_paper_graphs(paper_entities)
+        
+        # Step 3: Consolidate using LLM
+        consolidated_graph = self._consolidate_integrated_graph(integrated_entities)
+        
+        # Step 4: Validate connectivity of integrated graph
+        connectivity_metrics = self._validate_graph_connectivity(consolidated_graph)
+        self.console.print(f"📊 Integrated Graph Connectivity Metrics:")
+        self.console.print(f"   Total entities: {connectivity_metrics['total_entities']}")
+        self.console.print(f"   Connected entities: {connectivity_metrics['connected_entities']}")
+        self.console.print(f"   Connectivity ratio: {connectivity_metrics['connectivity_ratio']:.2%}")
+        self.console.print(f"   Total relationships: {connectivity_metrics['relationships_count']}")
+        
+        # Step 5: Generate integrated RDF
+        source_names = [paper['source_name'] for paper in self.paper_knowledge_graphs]
+        integrated_filename = f"integrated_graph_{'_'.join(source_names[:3])}"
+        if len(source_names) > 3:
+            integrated_filename += f"_and_{len(source_names)-3}_more"
+        
+        rdf_content = self._convert_to_rdf(consolidated_graph, integrated_filename)
+        self._save_integrated_rdf_file(rdf_content, source_names)
+        
+        return [consolidated_graph]
+    
+    def _save_integrated_rdf_file(self, rdf_content: str, source_names: List[str]) -> None:
+        """Save integrated RDF content to file with special naming."""
+        model_name = self.config.model_config.shortname
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create special naming for integrated graph
+        if len(source_names) <= 3:
+            sources_part = "_".join(source_names)
+        else:
+            sources_part = f"{'_'.join(source_names[:3])}_and_{len(source_names)-3}_more"
+        
+        # Determine output file path
+        if self.config.output_file.endswith('/'):
+            output_file = Path(self.config.output_file) / f"INTEGRATED_knowledge_graph_{sources_part}_{model_name}_{timestamp}.rdf"
+        else:
+            output_file = Path(f"INTEGRATED_knowledge_graph_{sources_part}_{model_name}_{timestamp}.rdf")
+        
+        try:
+            # Save RDF file
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(rdf_content)
+            
+            self.console.print(f"🎯 Saved INTEGRATED knowledge graph RDF to {output_file}")
+            
+        except Exception as e:
+            self.console.print(f"❌ Failed to save integrated RDF file: {e}")
     
     def _convert_to_rdf(self, knowledge_graph_text: str, source_file: str) -> str:
         """Convert knowledge graph text to RDF format."""
@@ -2064,6 +2394,14 @@ Here is the text:
             # Step 6: Save RDF file
             self._save_rdf_file(rdf_content, self.config.input_file)
             
+            # Step 7: Store for batch integration if in batch mode
+            if self.config.batch_mode:
+                self.paper_knowledge_graphs.append({
+                    'source_name': Path(self.config.input_file).stem,
+                    'graph_text': combined_result,
+                    'connectivity_metrics': connectivity_metrics
+                })
+            
             # Return the knowledge graph text
             results = [combined_result]
         
@@ -2140,10 +2478,17 @@ Here is the text:
         if self.config.worker_count > 1:
             # Parallel file processing
             self.console.print(f"🔄 Using {self.config.worker_count} workers for parallel processing")
-            return self._process_files_parallel()
+            results = self._process_files_parallel()
         else:
             # Sequential file processing
-            return self._process_files_sequential()
+            results = self._process_files_sequential()
+        
+        # For knowledge graph mode, integrate all paper graphs
+        if self.config.mode == ExtractionMode.KNOWLEDGE_GRAPH and self.paper_knowledge_graphs:
+            integrated_results = self._process_knowledge_graph_integration()
+            results.extend(integrated_results)
+        
+        return results
     
     def _process_files_sequential(self) -> List[str]:
         """Process files sequentially (original behavior)."""
@@ -2195,6 +2540,7 @@ Here is the text:
                 self._validate_chunking(text, chunks)
                 
                 # Process chunks for this file
+                file_results = []
                 for idx, chunk in enumerate(chunks):
                     # Generate prompt for current mode
                     prompt = self._get_prompt_for_mode(self.config.mode, chunk, idx, len(chunks))
@@ -2203,8 +2549,40 @@ Here is the text:
                     result = self._call_api(prompt)
                     
                     # Store result
+                    file_results.append(result)
                     all_results.append(result)
                     self.processed_chunks += 1
+                
+                # Handle knowledge graph mode for this file
+                if self.config.mode == ExtractionMode.KNOWLEDGE_GRAPH:
+                    # Store the original input file for processing
+                    original_input_file = self.config.input_file
+                    self.config.input_file = file_path
+                    
+                    # Process this file's knowledge graph
+                    # Step 1: Extract cross-chunk relationships
+                    cross_chunk_relationships = self._extract_cross_chunk_relationships(file_results)
+                    if cross_chunk_relationships:
+                        file_results.append(cross_chunk_relationships)
+                    
+                    # Step 2: Consolidate for connectivity
+                    consolidated_results = self._consolidate_knowledge_graph(file_results)
+                    
+                    # Step 3: Combine results
+                    combined_result = "\n\n".join(consolidated_results)
+                    
+                    # Step 4: Validate connectivity
+                    connectivity_metrics = self._validate_graph_connectivity(combined_result)
+                    
+                    # Step 5: Store for integration
+                    self.paper_knowledge_graphs.append({
+                        'source_name': Path(file_path).stem,
+                        'graph_text': combined_result,
+                        'connectivity_metrics': connectivity_metrics
+                    })
+                    
+                    # Restore original input file
+                    self.config.input_file = original_input_file
                 
                 progress.advance(files_task)
         
@@ -2297,9 +2675,42 @@ Here is the text:
             file_header = f"\n{'='*60}\nFILE: {Path(file_info['file_path']).name}\n{'='*60}\n"
             all_results.append(file_header)
             
-            # Add results for this file
+            # Get results for this file
+            file_results = []
             for i in range(file_info['start_idx'], file_info['end_idx']):
+                file_results.append(results[i])
                 all_results.append(results[i])
+            
+            # Handle knowledge graph mode for this file
+            if self.config.mode == ExtractionMode.KNOWLEDGE_GRAPH:
+                # Store the original input file for processing
+                original_input_file = self.config.input_file
+                self.config.input_file = file_info['file_path']
+                
+                # Process this file's knowledge graph
+                # Step 1: Extract cross-chunk relationships
+                cross_chunk_relationships = self._extract_cross_chunk_relationships(file_results)
+                if cross_chunk_relationships:
+                    file_results.append(cross_chunk_relationships)
+                
+                # Step 2: Consolidate for connectivity
+                consolidated_results = self._consolidate_knowledge_graph(file_results)
+                
+                # Step 3: Combine results
+                combined_result = "\n\n".join(consolidated_results)
+                
+                # Step 4: Validate connectivity
+                connectivity_metrics = self._validate_graph_connectivity(combined_result)
+                
+                # Step 5: Store for integration
+                self.paper_knowledge_graphs.append({
+                    'source_name': Path(file_info['file_path']).stem,
+                    'graph_text': combined_result,
+                    'connectivity_metrics': connectivity_metrics
+                })
+                
+                # Restore original input file
+                self.config.input_file = original_input_file
         
         self.results = all_results
         return all_results
