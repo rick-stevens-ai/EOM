@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract-o-matic.py - Extract-o-matic Bioinformatics Workflow Extraction Script
+graph-o-matic.py - Graph-o-matic Bioinformatics Workflow Extraction Script
 
 This script combines the best features from multiple extraction scripts:
 - YAML-based model configuration from model_servers.yaml
@@ -9,7 +9,7 @@ This script combines the best features from multiple extraction scripts:
 - Workflow Calculus notation from l33_process_summary_to_workflow.py
 
 Usage:
-    python extract-o-matic.py input_file [options]
+    python graph-o-matic.py input_file [options]
 """
 
 import os
@@ -75,6 +75,7 @@ class ExtractionMode(Enum):
     DATASET_EXTRACTION = "dataset_extraction"
     HYPOTHESIS_EXTRACTION = "hypothesis_extraction"
     OPEN_PROBLEMS = "open_problems"
+    KNOWLEDGE_GRAPH = "knowledge_graph"
 
 @dataclass
 class ModelConfig:
@@ -104,7 +105,7 @@ class ExtractionConfig:
     worker_count: int = 1
 
 class ExtractOMatic:
-    """Extract-o-matic main extraction class that handles all extraction modes."""
+    """Graph-o-matic main extraction class that handles all extraction modes."""
     
     def __init__(self, config: ExtractionConfig):
         self.config = config
@@ -325,6 +326,8 @@ class ExtractOMatic:
             return self._get_hypothesis_extraction_prompt(chunk_text, chunk_idx, total_chunks)
         elif mode == ExtractionMode.OPEN_PROBLEMS:
             return self._get_open_problems_prompt(chunk_text, chunk_idx, total_chunks)
+        elif mode == ExtractionMode.KNOWLEDGE_GRAPH:
+            return self._get_knowledge_graph_prompt(chunk_text, chunk_idx, total_chunks)
         else:
             raise ValueError(f"Unknown extraction mode: {mode}")
     
@@ -658,6 +661,65 @@ If no clear hypotheses are identified, respond with "No hypotheses identified in
 Text:
 {chunk_text}"""
     
+    def _get_knowledge_graph_prompt(self, chunk_text: str, chunk_idx: int, total_chunks: int) -> str:
+        """Generate knowledge graph extraction prompt for RDF output."""
+        return f"""Please analyze the following scientific text (part {chunk_idx + 1} of {total_chunks}) and extract a knowledge graph representing the key entities, relationships, and concepts mentioned.
+
+**CRITICAL REQUIREMENTS:**
+1. **Extract ALL entities**: Identify genes, proteins, organisms, methods, tools, databases, diseases, phenotypes, pathways, compounds, etc.
+2. **Extract relationships**: Identify how entities relate to each other (e.g., "gene encodes protein", "protein interacts with protein", "method analyzes data")
+3. **Use standard terminology**: When possible, use standard names and identifiers from relevant ontologies/databases
+4. **Provide context**: Include the experimental or analytical context for relationships
+5. **Format as structured triples**: Organize as Subject-Predicate-Object relationships
+
+**For each entity-relationship-entity triple, provide:**
+
+**ENTITY IDENTIFICATION:**
+- **Subject**: The source entity (gene, protein, organism, method, etc.)
+- **Predicate**: The relationship type (encodes, interacts_with, analyzes, regulates, etc.)
+- **Object**: The target entity
+- **Context**: Experimental or analytical context for this relationship
+- **Evidence**: Supporting evidence from the text
+- **Confidence**: High/Medium/Low based on how explicitly stated in the text
+
+**ENTITY TYPES TO EXTRACT:**
+- **Biological entities**: genes, proteins, RNA, DNA sequences, organisms, cell types, tissues
+- **Chemical entities**: compounds, drugs, metabolites, substrates
+- **Phenotypic entities**: diseases, symptoms, traits, phenotypes
+- **Methodological entities**: experimental methods, computational tools, databases, algorithms
+- **Data entities**: datasets, measurements, results, statistics
+- **Conceptual entities**: pathways, processes, functions, mechanisms
+
+**RELATIONSHIP TYPES TO EXTRACT:**
+- **Biological relationships**: encodes, regulates, interacts_with, binds_to, catalyzes
+- **Methodological relationships**: uses, analyzes, measures, compares, validates
+- **Causal relationships**: causes, leads_to, results_in, affects, influences
+- **Structural relationships**: part_of, contains, located_in, composed_of
+- **Functional relationships**: participates_in, involved_in, required_for, activates, inhibits
+
+**OUTPUT FORMAT:**
+For each relationship, use this exact structure:
+
+**TRIPLE #:** [Sequential number]
+- **Subject:** [Entity name] (Type: [entity type])
+- **Predicate:** [Relationship type]
+- **Object:** [Entity name] (Type: [entity type])
+- **Context:** [Experimental/analytical context]
+- **Evidence:** [Supporting text from the document]
+- **Confidence:** [High/Medium/Low]
+- **Source:** [Location in text where this relationship was identified]
+
+**IMPORTANT NOTES:**
+- Focus on factual relationships explicitly stated or strongly implied in the text
+- Include both direct experimental findings and methodological relationships
+- For ambiguous relationships, mark confidence as Low but still include them
+- Use standardized entity names when possible (e.g., official gene symbols, standard method names)
+- Include quantitative relationships when measurements are provided
+- Consider temporal relationships (before/after, during, following)
+
+Text:
+{chunk_text}"""
+
     def _get_open_problems_prompt(self, chunk_text: str, chunk_idx: int, total_chunks: int) -> str:
         """Generate open problems extraction prompt for Wisteria-compatible JSON output."""
         return f"""Please analyze the following scientific text (part {chunk_idx + 1} of {total_chunks}) and identify ALL open problems, unsolved questions, research gaps, future work directions, and challenges mentioned by the authors. Read very carefully for statements about what remains unknown, unexplored, or needs further investigation.
@@ -815,6 +877,8 @@ Here is the text:
             return self._extract_hypotheses()
         elif self.config.mode == ExtractionMode.OPEN_PROBLEMS:
             return self._extract_open_problems()
+        elif self.config.mode == ExtractionMode.KNOWLEDGE_GRAPH:
+            return self._extract_knowledge_graph()
         elif self.config.batch_mode:
             return self._extract_batch()
         else:
@@ -1235,10 +1299,244 @@ Here is the text:
         except Exception as e:
             self.console.print(f"❌ Failed to save Wisteria JSON: {e}")
     
+    def _extract_knowledge_graph(self) -> List[str]:
+        """Extract knowledge graph and generate RDF files."""
+
+        self.console.print("🌐 Starting knowledge graph extraction")
+
+        if self.config.batch_mode:
+            return self._extract_knowledge_graph_batch()
+        else:
+            return self._extract_knowledge_graph_single()
+
+    def _extract_knowledge_graph_single(self) -> List[str]:
+        """Extract knowledge graph from a single file and generate RDF."""
+        self.console.print(f"📄 Processing {self.config.input_file}")
+        
+        # Read input file
+        text = self._read_input_file()
+        
+        # Check if document classification is required
+        if self.config.require_problem or self.config.require_tool:
+            classification = self._classify_document(text)
+            if self.config.require_problem and classification == 'TOOL':
+                self.console.print("❌ Document classified as TOOL - skipping extraction")
+                return ["Document classified as TOOL - extraction skipped"]
+            elif self.config.require_tool and classification == 'PROBLEM':
+                self.console.print("❌ Document classified as PROBLEM - skipping extraction")
+                return ["Document classified as PROBLEM - extraction skipped"]
+        
+        # Extract knowledge graph from text
+        knowledge_graph_text = self._process_text_for_knowledge_graph(text, self.config.input_file)
+        
+        # Convert to RDF format
+        rdf_content = self._convert_to_rdf(knowledge_graph_text, self.config.input_file)
+        
+        # Save RDF file
+        self._save_rdf_file(rdf_content, self.config.input_file)
+        
+        return [knowledge_graph_text]
+
+    def _extract_knowledge_graph_batch(self) -> List[str]:
+        """Extract knowledge graph from multiple files and generate RDF files."""
+        self.console.print(f"📁 Processing {len(self.config.input_files)} files")
+        
+        all_results = []
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            "[progress.percentage]{task.percentage:>3.0f}%",
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=self.console,
+        ) as progress:
+            files_task = progress.add_task("Processing files", total=len(self.config.input_files))
+            
+            for file_path in self.config.input_files:
+                progress.update(files_task, description=f"Processing {Path(file_path).name}")
+                
+                # Read file
+                text = self._read_single_file(file_path)
+                
+                if not text:
+                    self.console.print(f"⚠️  Skipping empty file: {file_path}")
+                    progress.advance(files_task)
+                    continue
+                
+                # Check if document classification is required
+                if self.config.require_problem or self.config.require_tool:
+                    classification = self._classify_document(text)
+                    if self.config.require_problem and classification == 'TOOL':
+                        self.console.print(f"⚠️  Skipping {Path(file_path).name} - classified as TOOL")
+                        progress.advance(files_task)
+                        continue
+                    elif self.config.require_tool and classification == 'PROBLEM':
+                        self.console.print(f"⚠️  Skipping {Path(file_path).name} - classified as PROBLEM")
+                        progress.advance(files_task)
+                        continue
+                
+                # Extract knowledge graph from text
+                knowledge_graph_text = self._process_text_for_knowledge_graph(text, file_path, show_progress=False)
+                
+                # Convert to RDF format
+                rdf_content = self._convert_to_rdf(knowledge_graph_text, file_path)
+                
+                # Save RDF file
+                self._save_rdf_file(rdf_content, file_path)
+                
+                # Add to results
+                all_results.append(f"\n{'='*60}\nFILE: {Path(file_path).name}\n{'='*60}\n")
+                all_results.append(knowledge_graph_text)
+                
+                progress.advance(files_task)
+        
+        self.results = all_results
+        return all_results
+
+    def _process_text_for_knowledge_graph(self, text: str, source_file: str, show_progress: bool = True) -> str:
+        """Process text for knowledge graph extraction."""
+        self.console.print(f"🧠 Extracting knowledge graph from {Path(source_file).name}")
+        
+        # Split text into chunks
+        chunks = self._chunk_text(text)
+        all_results = []
+        
+        if show_progress:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                "[progress.percentage]{task.percentage:>3.0f}%",
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=self.console
+            ) as progress:
+                chunks_task = progress.add_task("Processing chunks", total=len(chunks))
+                
+                for i, chunk in enumerate(chunks):
+                    prompt = self._get_prompt_for_mode(
+                        ExtractionMode.KNOWLEDGE_GRAPH, chunk, i, len(chunks)
+                    )
+                    result = self._call_api(prompt)
+                    all_results.append(result)
+                    progress.advance(chunks_task)
+        else:
+            for i, chunk in enumerate(chunks):
+                prompt = self._get_prompt_for_mode(
+                    ExtractionMode.KNOWLEDGE_GRAPH, chunk, i, len(chunks)
+                )
+                result = self._call_api(prompt)
+                all_results.append(result)
+        
+        # Combine results
+        combined_result = "\n\n".join(all_results)
+        return combined_result
+
+    def _convert_to_rdf(self, knowledge_graph_text: str, source_file: str) -> str:
+        """Convert knowledge graph text to RDF format."""
+        self.console.print(f"🔄 Converting to RDF format for {Path(source_file).name}")
+        
+        # Basic RDF structure
+        source_name = Path(source_file).stem
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        rdf_header = f"""@prefix : <http://example.org/graph-o-matic/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix bio: <http://purl.obolibrary.org/obo/> .
+@prefix dc: <http://purl.org/dc/elements/1.1/> .
+
+# Knowledge Graph extracted from {source_name}
+# Generated on {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+:document_{source_name} rdf:type :Document ;
+    dc:source "{source_file}" ;
+    dc:created "{datetime.now().isoformat()}" ;
+    :extractedBy "graph-o-matic" .
+
+"""
+        
+        # Convert knowledge graph text to RDF triples
+        # This is a simplified conversion - in practice, you'd want more sophisticated parsing
+        rdf_triples = []
+        lines = knowledge_graph_text.split('\n')
+        entity_counter = 0
+        
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                # Simple pattern matching for entities and relationships
+                if '→' in line or '->' in line:
+                    # Parse relationship patterns
+                    separator = '→' if '→' in line else '->'
+                    parts = line.split(separator)
+                    if len(parts) == 2:
+                        subject = parts[0].strip()
+                        predicate_object = parts[1].strip()
+                        
+                        # Clean and create RDF-safe identifiers
+                        subject_id = self._to_rdf_identifier(subject)
+                        
+                        # Create triple
+                        rdf_triples.append(f":entity_{subject_id} rdfs:label \"{subject}\" .")
+                        rdf_triples.append(f":entity_{subject_id} :relatedTo \"{predicate_object}\" .")
+                        entity_counter += 1
+                
+                elif ':' in line:
+                    # Parse attribute patterns
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        entity = parts[0].strip()
+                        attribute = parts[1].strip()
+                        
+                        entity_id = self._to_rdf_identifier(entity)
+                        rdf_triples.append(f":entity_{entity_id} rdfs:label \"{entity}\" .")
+                        rdf_triples.append(f":entity_{entity_id} :hasProperty \"{attribute}\" .")
+                        entity_counter += 1
+        
+        # Combine header and triples
+        rdf_content = rdf_header + '\n'.join(rdf_triples) + '\n'
+        return rdf_content
+
+    def _to_rdf_identifier(self, text: str) -> str:
+        """Convert text to RDF-safe identifier."""
+        import re
+        # Remove special characters and replace spaces with underscores
+        identifier = re.sub(r'[^\w\s-]', '', text)
+        identifier = re.sub(r'\s+', '_', identifier)
+        identifier = identifier.lower()
+        return identifier[:50]  # Limit length
+
+    def _save_rdf_file(self, rdf_content: str, source_file: str) -> None:
+        """Save RDF content to file."""
+        source_name = Path(source_file).stem
+        model_name = self.config.model_config.shortname
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Determine output file path
+        if self.config.output_file.endswith('/'):
+            output_file = Path(self.config.output_file) / f"knowledge_graph_{source_name}_{model_name}_{timestamp}.rdf"
+        else:
+            output_file = Path(f"knowledge_graph_{source_name}_{model_name}_{timestamp}.rdf")
+        
+        try:
+            # Save RDF file
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(rdf_content)
+            
+            self.console.print(f"✅ Saved knowledge graph RDF to {output_file}")
+            
+        except Exception as e:
+            self.console.print(f"❌ Failed to save RDF file: {e}")
+
     def _extract_open_problems(self) -> List[str]:
         """Extract open problems and generate Wisteria-compatible JSON files."""
+
         self.console.print("🔍 Starting open problems extraction for Wisteria compatibility")
-        
+
         if self.config.batch_mode:
             return self._extract_open_problems_batch()
         else:
@@ -1976,7 +2274,7 @@ Here is the text:
         
         # Save to file
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(f"# Extract-o-matic Results\n")
+            f.write(f"# Graph-o-matic Results\n")
             f.write(f"# Source: {filename}\n")
             f.write(f"# Mode: {self.config.mode.value}\n")
             f.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
@@ -2098,7 +2396,7 @@ def load_model_config(config_file: str, model_shortname: str) -> ModelConfig:
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Extract-o-matic bioinformatics workflow extraction script',
+        description='Graph-o-matic bioinformatics workflow extraction script',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Extraction Modes:
@@ -2112,25 +2410,28 @@ Extraction Modes:
   dataset_extraction - Extract comprehensive information about datasets used, produced, or cited
   hypothesis_extraction - Extract hypotheses and generate Wisteria-compatible JSON files
   open_problems - Extract open problems and research gaps with Wisteria-compatible JSON files
+  knowledge_graph - Extract semantic relationships and convert to RDF format
 
 Examples:
-  python extract-o-matic.py paper.txt --mode workflow --model scout
-  python extract-o-matic.py papers/ --mode workflow --model scout --output results_dir/
-  python extract-o-matic.py papers/ --mode workflow --model scout --no-recursive
-  python extract-o-matic.py paper.pdf --mode bvbrc_mapping --model llama --output results.txt
-  python extract-o-matic.py paper.txt --mode workflow_calculus --notation notation.txt --rubric rubric.txt
-  python extract-o-matic.py papers/ --mode experimental_protocol --model scout --output protocols_dir/
-  python extract-o-matic.py paper.txt --mode automated_protocol --model scout --output automation_plan.txt
-  python extract-o-matic.py paper.txt --mode dataset_extraction --model scout --output datasets.txt
-  python extract-o-matic.py papers/ --mode dataset_extraction --model scout --output datasets_dir/
-  python extract-o-matic.py paper.txt --mode hypothesis_extraction --model scout --output hypotheses.json
-  python extract-o-matic.py papers/ --mode hypothesis_extraction --model scout --output hypotheses_dir/
-  python extract-o-matic.py paper.txt --mode open_problems --model scout --output open_problems.json
-  python extract-o-matic.py papers/ --mode open_problems --model scout --output open_problems_dir/
-  python extract-o-matic.py paper.txt --mode workflow --require-problem --model scout
-  python extract-o-matic.py papers/ --mode workflow --require-tool --model scout
-  python extract-o-matic.py paper.txt --mode workflow --model scout --workers 4
-  python extract-o-matic.py papers/ --mode workflow --model scout --workers 8 --output results_dir/
+  python graph-o-matic.py paper.txt --mode workflow --model scout
+  python graph-o-matic.py papers/ --mode workflow --model scout --output results_dir/
+  python graph-o-matic.py papers/ --mode workflow --model scout --no-recursive
+  python graph-o-matic.py paper.pdf --mode bvbrc_mapping --model llama --output results.txt
+  python graph-o-matic.py paper.txt --mode workflow_calculus --notation notation.txt --rubric rubric.txt
+  python graph-o-matic.py papers/ --mode experimental_protocol --model scout --output protocols_dir/
+  python graph-o-matic.py paper.txt --mode automated_protocol --model scout --output automation_plan.txt
+  python graph-o-matic.py paper.txt --mode dataset_extraction --model scout --output datasets.txt
+  python graph-o-matic.py papers/ --mode dataset_extraction --model scout --output datasets_dir/
+  python graph-o-matic.py paper.txt --mode hypothesis_extraction --model scout --output hypotheses.json
+  python graph-o-matic.py papers/ --mode hypothesis_extraction --model scout --output hypotheses_dir/
+  python graph-o-matic.py paper.txt --mode open_problems --model scout --output open_problems.json
+  python graph-o-matic.py papers/ --mode open_problems --model scout --output open_problems_dir/
+  python graph-o-matic.py paper.txt --mode knowledge_graph --model scout --output knowledge_graph.rdf
+  python graph-o-matic.py papers/ --mode knowledge_graph --model scout --output knowledge_graphs_dir/
+  python graph-o-matic.py paper.txt --mode workflow --require-problem --model scout
+  python graph-o-matic.py papers/ --mode workflow --require-tool --model scout
+  python graph-o-matic.py paper.txt --mode workflow --model scout --workers 4
+  python graph-o-matic.py papers/ --mode workflow --model scout --workers 8 --output results_dir/
         """
     )
     
@@ -2191,7 +2492,7 @@ def main():
         classification_filter = "TOOL only"
     
     console.print(Panel(
-        "[bold blue]Extract-o-matic Bioinformatics Workflow Extraction Script[/bold blue]\n"
+        "[bold blue]Graph-o-matic Bioinformatics Workflow Extraction Script[/bold blue]\n"
         f"Mode: {args.mode}\n"
         f"Model: {args.model}\n"
         f"Input: {args.input_path}\n"
