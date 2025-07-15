@@ -1,0 +1,50 @@
+Extraction Rubric for Bioinformatics Workflow Papers
+====================================================
+
+Purpose
+-------
+Guide LLMs or annotators to capture, in a compact functional/typed notation,
+the computational workflows that are explicitly stated *or only implied* in scientific papers.
+
+For **every paragraph** (or logical block) extract zero or more workflow *steps*.
+Populate the following fields — leave a field blank (use “⊥”) only if the paper
+gives no clue.
+
+Required Fields
+---------------
+
+Field | What to capture | Heuristics / cues
+----- | --------------- | -----------------
+**Step‑Name** | Concise verb‑phrase or tool name that denotes the action | Look for verbs: “aligned”, “trimmed”, “trained a model”, or explicit tool names “FastQC”
+**Inputs** | Up‑stream data objects consumed | File extensions (`.fastq`, `.bam`), phrases like “output of X”, “cleaned reads”
+**Outputs** | Data objects produced | “VCF”, “plots”, “matrix of counts”
+**Operation‑Type** | One of **Transform**, **Filter**, **Aggregate**, **Train‑ML**, **LLM‑query**, **Visualize**, **I/O**, **Infer** | Map verbs to this controlled vocab
+**Parallelism Hint** | *independent‑samples*, *chromosome‑shards*, or ∅ | Words like “for each sample”, “in parallel”, “sharded by chromosome”
+**Iteration Range** | The collection driving a loop | Sample list, gene set, parameter sweep
+**Tool / LLM‑Call** | Canonical registry key (case‑normalized) | Normalise synonyms – “HISAT2” == “hisat2”
+**Params / Flags** | Explicit CLI flags, hyper‑parameters, key‑value settings | Capture as JSON‑style dict if possible
+**Side‑effect?** | `True` if the step writes to disk/DB or has external I/O | Look for “saved to”, “exported to S3”, data‑base updates
+**Type Annotations** | Domain types of inputs/outputs if mentioned | “Fastq”, “Bam”, “Real”, etc.
+**Citation Anchor** | Pointer to location in paper (sentence id, page number) | Keeps traceability
+
+Scoring Each Extracted Step
+---------------------------
+Score | Criteria
+----- | --------
+**0** | Nothing captured (skip step)
+**1** | Step‑Name **plus** at least one I/O edge (Inputs or Outputs)
+**2** | Adds Operation‑Type, Tool, **either** Inputs or Outputs fully typed
+**3** | All mandatory fields (**bold**) + Params / Parallelism or Iteration info; Side‑effect flagged if applicable
+
+Tips for Annotators / Models
+----------------------------
+* When a workflow action is **implied** (e.g. “quality‑checked reads”), emit a step with Operation‑Type `Infer` and leave missing slots `⊥`.
+* Prefer canonical tool names over synonyms.
+* Keep step names *imperative* (e.g. “align_reads”, “filter_lowqual”).
+* The output of one step is *implicitly* the input to the next unless
+  overridden. Capture explicit aliases only when named in the text.
+* If multiple steps are *clearly independent* (fan‑out), flag Parallelism Hint appropriately.
+
+This rubric is designed to feed the **Workflow Calculus v0.9** interpreter;
+every field maps to either an identifier, a type annotation, or a decorator
+(⟂ for branch, ∥ for parallel, etc.).
