@@ -16,8 +16,9 @@ Features:
 - Semantic relationship extraction with confidence scoring
 - Knowledge graph connectivity optimization (eliminates isolated nodes)
 - Cross-chunk relationship detection for better graph connectivity
-- Cross-paper knowledge graph integration for batch processing
-- Incremental graph merging with robust entity deduplication
+- Cross-paper knowledge graph integration for batch processing (scalable to thousands of papers)
+- Incremental graph merging with robust entity deduplication and streaming processing
+- Checkpointing and resume capability for large-scale processing
 - Open problems extraction with structured JSON output
 - Parallel processing and batch mode support
 
@@ -134,6 +135,8 @@ class ExtractOMatic:
         self.results_lock = Lock()
         self.progress_lock = Lock()
         self.paper_knowledge_graphs = []  # Store individual paper graphs for integration
+        self.integration_batch_size = 50  # Process integration in batches to manage memory
+        self.integrated_graph_cache = {}  # Cache for incremental integration
         
         # Initialize OpenAI client
         self._initialize_client()
@@ -1163,54 +1166,193 @@ Provide additional cross-section relationships in the same triple format:"""
         
         return merged
     
-    def _integrate_paper_graphs(self, paper_graphs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        """Integrate multiple paper knowledge graphs into a single unified graph."""
+    def _integrate_paper_graphs_streaming(self, paper_graphs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Integrate multiple paper knowledge graphs using streaming approach for scalability."""
         if not paper_graphs:
             return {}
             
-        self.console.print(f"🔗 Integrating {len(paper_graphs)} paper knowledge graphs...")
+        total_papers = len(paper_graphs)
+        self.console.print(f"🔗 Integrating {total_papers} paper knowledge graphs using streaming approach...")
         
-        integrated_entities = {}
+        # Initialize or load existing integrated graph
+        checkpoint_data = self._load_integration_checkpoint()
+        if checkpoint_data and checkpoint_data['total_papers'] == total_papers:
+            # Resume from checkpoint
+            integrated_entities = checkpoint_data['entities']
+            start_from_paper = checkpoint_data['processed_count']
+            self.console.print(f"   Resuming from paper {start_from_paper + 1}")
+        else:
+            # Start fresh
+            integrated_entities = self.integrated_graph_cache.copy()
+            start_from_paper = 0
         
-        for graph_idx, paper_graph in enumerate(paper_graphs):
-            self.console.print(f"   Processing paper {graph_idx + 1}/{len(paper_graphs)}: {len(paper_graph)} entities")
+        # Process papers in batches to manage memory
+        for batch_start in range(0, total_papers, self.integration_batch_size):
+            batch_end = min(batch_start + self.integration_batch_size, total_papers)
             
-            for entity_name, entity_data in paper_graph.items():
-                try:
-                    # Find potential matches in integrated graph
-                    matches = self._find_entity_matches(entity_name, integrated_entities)
+            # Skip batches that are already processed
+            if batch_end <= start_from_paper:
+                continue
+                
+            batch_papers = paper_graphs[batch_start:batch_end]
+            
+            self.console.print(f"   Processing batch {batch_start//self.integration_batch_size + 1}/{(total_papers + self.integration_batch_size - 1)//self.integration_batch_size}: papers {batch_start+1}-{batch_end}")
+            
+            # Process each paper in the batch
+            for paper_idx, paper_graph in enumerate(batch_papers):
+                global_paper_idx = batch_start + paper_idx
+                
+                # Skip papers that are already processed
+                if global_paper_idx < start_from_paper:
+                    continue
                     
-                    if matches:
-                        # Merge with the best match (first one found)
-                        primary_match = matches[0]
-                        integrated_entities[primary_match] = self._merge_entities(
-                            integrated_entities[primary_match], 
-                            entity_data
-                        )
-                        
-                        # Add current name as alias
-                        integrated_entities[primary_match]['aliases'].add(entity_name)
-                        
-                        # If there are multiple matches, merge them all
-                        for additional_match in matches[1:]:
-                            integrated_entities[primary_match] = self._merge_entities(
-                                integrated_entities[primary_match],
-                                integrated_entities[additional_match]
-                            )
-                            # Remove the merged entity
-                            del integrated_entities[additional_match]
+                self.console.print(f"     Paper {global_paper_idx + 1}/{total_papers}: {len(paper_graph)} entities")
+                
+                # Process entities in chunks to avoid memory issues
+                entity_items = list(paper_graph.items())
+                entity_chunk_size = 100  # Process 100 entities at a time
+                
+                for entity_chunk_start in range(0, len(entity_items), entity_chunk_size):
+                    entity_chunk_end = min(entity_chunk_start + entity_chunk_size, len(entity_items))
+                    entity_chunk = entity_items[entity_chunk_start:entity_chunk_end]
+                    
+                    for entity_name, entity_data in entity_chunk:
+                        try:
+                            # Find potential matches in integrated graph
+                            matches = self._find_entity_matches(entity_name, integrated_entities)
                             
-                    else:
-                        # No matches found, add as new entity
-                        integrated_entities[entity_name] = entity_data.copy()
-                        
-                except Exception as e:
-                    self.console.print(f"⚠️  Warning: Error merging entity '{entity_name}': {e}")
-                    # Add as new entity to avoid data loss
-                    if entity_name not in integrated_entities:
-                        integrated_entities[entity_name] = entity_data.copy()
+                            if matches:
+                                # Merge with the best match (first one found)
+                                primary_match = matches[0]
+                                integrated_entities[primary_match] = self._merge_entities(
+                                    integrated_entities[primary_match], 
+                                    entity_data
+                                )
+                                
+                                # Add current name as alias
+                                integrated_entities[primary_match]['aliases'].add(entity_name)
+                                
+                                # If there are multiple matches, merge them all
+                                for additional_match in matches[1:]:
+                                    integrated_entities[primary_match] = self._merge_entities(
+                                        integrated_entities[primary_match],
+                                        integrated_entities[additional_match]
+                                    )
+                                    # Remove the merged entity
+                                    del integrated_entities[additional_match]
+                                    
+                            else:
+                                # No matches found, add as new entity
+                                integrated_entities[entity_name] = entity_data.copy()
+                                
+                        except Exception as e:
+                            self.console.print(f"⚠️  Warning: Error merging entity '{entity_name}': {e}")
+                            # Add as new entity to avoid data loss
+                            if entity_name not in integrated_entities:
+                                integrated_entities[entity_name] = entity_data.copy()
+                
+                # Periodically clean up memory and save checkpoint
+                if (global_paper_idx + 1) % 10 == 0:
+                    self._cleanup_memory()
+                    self.integrated_graph_cache = integrated_entities.copy()
+                    # Save checkpoint for large batches
+                    if total_papers > 100:
+                        self._save_integration_checkpoint(integrated_entities, global_paper_idx + 1)
         
         return integrated_entities
+    
+    def _cleanup_memory(self):
+        """Clean up memory by forcing garbage collection."""
+        import gc
+        gc.collect()
+    
+    def _save_integration_checkpoint(self, integrated_entities: Dict[str, Dict[str, Any]], processed_count: int):
+        """Save integration checkpoint for resume capability."""
+        if not self.config.output_file.endswith('/'):
+            checkpoint_dir = Path(self.config.output_file).parent
+        else:
+            checkpoint_dir = Path(self.config.output_file)
+        
+        checkpoint_file = checkpoint_dir / f"integration_checkpoint_{processed_count}papers.json"
+        
+        try:
+            # Convert sets to lists for JSON serialization
+            serializable_entities = {}
+            for entity_name, entity_data in integrated_entities.items():
+                serializable_entities[entity_name] = {
+                    'name': entity_data['name'],
+                    'type': entity_data['type'],
+                    'aliases': list(entity_data['aliases']),
+                    'relationships': entity_data['relationships'],
+                    'sources': list(entity_data['sources'])
+                }
+            
+            checkpoint_data = {
+                'processed_count': processed_count,
+                'total_papers': len(self.paper_knowledge_graphs),
+                'entities': serializable_entities,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+                
+            self.console.print(f"💾 Saved integration checkpoint: {checkpoint_file}")
+            
+        except Exception as e:
+            self.console.print(f"⚠️  Failed to save checkpoint: {e}")
+    
+    def _load_integration_checkpoint(self) -> Dict[str, Any]:
+        """Load integration checkpoint if available."""
+        if not self.config.output_file.endswith('/'):
+            checkpoint_dir = Path(self.config.output_file).parent
+        else:
+            checkpoint_dir = Path(self.config.output_file)
+        
+        # Find most recent checkpoint
+        checkpoints = list(checkpoint_dir.glob("integration_checkpoint_*papers.json"))
+        if not checkpoints:
+            return None
+        
+        latest_checkpoint = max(checkpoints, key=lambda p: p.stat().st_mtime)
+        
+        try:
+            with open(latest_checkpoint, 'r', encoding='utf-8') as f:
+                checkpoint_data = json.load(f)
+            
+            # Convert lists back to sets
+            entities = {}
+            for entity_name, entity_data in checkpoint_data['entities'].items():
+                entities[entity_name] = {
+                    'name': entity_data['name'],
+                    'type': entity_data['type'],
+                    'aliases': set(entity_data['aliases']),
+                    'relationships': entity_data['relationships'],
+                    'sources': set(entity_data['sources'])
+                }
+            
+            checkpoint_data['entities'] = entities
+            self.console.print(f"📂 Loaded integration checkpoint: {latest_checkpoint}")
+            self.console.print(f"   Resuming from {checkpoint_data['processed_count']} processed papers")
+            
+            return checkpoint_data
+            
+        except Exception as e:
+            self.console.print(f"⚠️  Failed to load checkpoint: {e}")
+            return None
+    
+    def _generate_scalable_integrated_filename(self, paper_count: int, timestamp: str) -> str:
+        """Generate scalable filename for integrated graphs."""
+        model_name = self.config.model_config.shortname
+        
+        # Use paper count and timestamp for scalable naming
+        base_name = f"INTEGRATED_knowledge_graph_{paper_count}papers_{model_name}_{timestamp}"
+        
+        # Add domain hash for uniqueness if needed
+        domain_hash = abs(hash(str(sorted([paper['source_name'] for paper in self.paper_knowledge_graphs]))))
+        domain_hash_short = str(domain_hash)[-6:]  # Last 6 digits
+        
+        return f"{base_name}_h{domain_hash_short}"
     
     def _consolidate_integrated_graph(self, integrated_entities: Dict[str, Dict[str, Any]]) -> str:
         """Consolidate the integrated knowledge graph using LLM for final cleanup."""
@@ -1283,8 +1425,8 @@ Please provide a cleaned, consolidated version maintaining the same triple forma
             entities = self._extract_entities_from_graph(paper_data['graph_text'])
             paper_entities.append(entities)
             
-        # Step 2: Integrate graphs incrementally
-        integrated_entities = self._integrate_paper_graphs(paper_entities)
+        # Step 2: Integrate graphs incrementally using streaming approach
+        integrated_entities = self._integrate_paper_graphs_streaming(paper_entities)
         
         # Step 3: Consolidate using LLM
         consolidated_graph = self._consolidate_integrated_graph(integrated_entities)
@@ -1298,39 +1440,50 @@ Please provide a cleaned, consolidated version maintaining the same triple forma
         self.console.print(f"   Total relationships: {connectivity_metrics['relationships_count']}")
         
         # Step 5: Generate integrated RDF
-        source_names = [paper['source_name'] for paper in self.paper_knowledge_graphs]
-        integrated_filename = f"integrated_graph_{'_'.join(source_names[:3])}"
-        if len(source_names) > 3:
-            integrated_filename += f"_and_{len(source_names)-3}_more"
+        paper_count = len(self.paper_knowledge_graphs)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        integrated_filename = self._generate_scalable_integrated_filename(paper_count, timestamp)
         
         rdf_content = self._convert_to_rdf(consolidated_graph, integrated_filename)
-        self._save_integrated_rdf_file(rdf_content, source_names)
+        self._save_integrated_rdf_file_scalable(rdf_content, paper_count, timestamp)
         
         return [consolidated_graph]
     
-    def _save_integrated_rdf_file(self, rdf_content: str, source_names: List[str]) -> None:
-        """Save integrated RDF content to file with special naming."""
-        model_name = self.config.model_config.shortname
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create special naming for integrated graph
-        if len(source_names) <= 3:
-            sources_part = "_".join(source_names)
-        else:
-            sources_part = f"{'_'.join(source_names[:3])}_and_{len(source_names)-3}_more"
+    def _save_integrated_rdf_file_scalable(self, rdf_content: str, paper_count: int, timestamp: str) -> None:
+        """Save integrated RDF content to file with scalable naming."""
+        integrated_filename = self._generate_scalable_integrated_filename(paper_count, timestamp)
         
         # Determine output file path
         if self.config.output_file.endswith('/'):
-            output_file = Path(self.config.output_file) / f"INTEGRATED_knowledge_graph_{sources_part}_{model_name}_{timestamp}.rdf"
+            output_file = Path(self.config.output_file) / f"{integrated_filename}.rdf"
         else:
-            output_file = Path(f"INTEGRATED_knowledge_graph_{sources_part}_{model_name}_{timestamp}.rdf")
+            output_file = Path(f"{integrated_filename}.rdf")
         
         try:
-            # Save RDF file
+            # Save RDF file with metadata
             with open(output_file, 'w', encoding='utf-8') as f:
+                # Write metadata header
+                f.write(f"# INTEGRATED Knowledge Graph\n")
+                f.write(f"# Source papers: {paper_count}\n")
+                f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"# Model: {self.config.model_config.shortname}\n")
+                f.write(f"# Domain hash: {integrated_filename.split('_h')[1].split('.')[0]}\n")
+                f.write(f"# \n")
                 f.write(rdf_content)
             
             self.console.print(f"🎯 Saved INTEGRATED knowledge graph RDF to {output_file}")
+            self.console.print(f"   📊 Integrated {paper_count} papers")
+            
+            # Save paper list for reference
+            paper_list_file = output_file.with_suffix('.papers.txt')
+            with open(paper_list_file, 'w', encoding='utf-8') as f:
+                f.write(f"# Papers included in {integrated_filename}.rdf\n")
+                f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"# Total papers: {paper_count}\n\n")
+                for i, paper_data in enumerate(self.paper_knowledge_graphs, 1):
+                    f.write(f"{i:4d}. {paper_data['source_name']}\n")
+            
+            self.console.print(f"   📝 Paper list saved to {paper_list_file}")
             
         except Exception as e:
             self.console.print(f"❌ Failed to save integrated RDF file: {e}")

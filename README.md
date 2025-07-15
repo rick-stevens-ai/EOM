@@ -93,6 +93,10 @@ python extract-o-matic.py papers/ --mode dataset_extraction --model gpt-4.1 --ou
 # Knowledge graph integration across multiple papers
 python extract-o-matic.py papers/ --mode knowledge_graph --model gpt-4.1 --output graphs_dir/ --workers 4
 # Creates individual paper graphs + integrated INTEGRATED_knowledge_graph file
+
+# Large-scale processing (1000+ papers) with checkpointing
+python extract-o-matic.py large_paper_collection/ --mode knowledge_graph --model gpt-4.1 --output results/ --workers 8
+# Automatically handles memory management, checkpointing, and resume capability
 ```
 
 ### Complete Pipeline
@@ -181,13 +185,15 @@ python extract-o-matic.py papers/ \
 - **RDF files** with semantic relationships in standard format
 - **Connectivity optimization** to eliminate isolated nodes
 - **Cross-chunk relationship detection** for better graph connectivity
-- **Cross-paper integration** for batch processing (creates INTEGRATED_knowledge_graph files)
-- **Incremental graph merging** with robust entity deduplication
+- **Cross-paper integration** for batch processing (scalable to thousands of papers)
+- **Incremental graph merging** with robust entity deduplication and streaming processing
+- **Checkpointing and resume capability** for large-scale processing
 - Entity-relationship triples with confidence scores
 - **Connectivity metrics** displayed during processing
 - Compatible with graph databases and semantic web tools
 - Timestamped outputs for version tracking
-- **Special naming** for integrated graphs with source paper tracking
+- **Scalable naming** for integrated graphs with paper count and domain hashing
+- **Paper list files** for tracking source papers in large integrations
 
 ## 🔧 Troubleshooting
 
