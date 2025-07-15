@@ -7,15 +7,17 @@ A powerful suite of AI-powered tools for extracting, analyzing, and processing s
 ## 🚀 Features
 
 ### Core Extraction Capabilities
-- **9 Extraction Modes:**
+- **11 Extraction Modes:**
   - Workflow extraction and BV-BRC service mapping
   - Scientific problem summarization
-  - Experimental protocol identification
+  - Experimental protocol identification (with consolidation)
   - Dataset extraction with comprehensive metadata
   - Hypothesis extraction with Wisteria JSON compatibility
   - Document classification (TOOL vs PROBLEM)
   - Workflow calculus notation generation
   - Automated protocol mapping for robotics/AGI
+  - Open problems and research gaps extraction
+  - Knowledge graph extraction with RDF output
 
 ### Advanced Processing
 - **Rich UI** with progress tracking and visual feedback
@@ -24,6 +26,8 @@ A powerful suite of AI-powered tools for extracting, analyzing, and processing s
 - **LaTeX and PDF** text extraction
 - **Token-based and character-based** intelligent chunking
 - **Document classification** and filtering
+- **Protocol consolidation** for experimental_protocol mode
+- **Knowledge graph RDF generation** with semantic relationships
 
 ### Analysis Pipeline
 - **Dataset summarization** from extraction results
@@ -36,7 +40,8 @@ A powerful suite of AI-powered tools for extracting, analyzing, and processing s
 
 | Tool | Purpose | Key Features |
 |------|---------|-------------|
-| `extract-o-matic.py` | Main extraction engine | 9 modes, parallel processing, rich UI |
+| `extract-o-matic.py` | Main extraction engine | 11 modes, parallel processing, rich UI, RDF output |
+| `graph-o-matic.py` | **DEPRECATED** - Use extract-o-matic.py | Legacy knowledge graph extraction |
 | `extract_summary_tables.py` | CSV generation from extractions | Structured data export |
 | `analyze_datasets.py` | LLM-powered dataset analysis | Domain classification, trend analysis |
 | `md2pdf.py` | Markdown to PDF conversion | Batch processing, report generation |
@@ -75,6 +80,9 @@ python extract-o-matic.py paper.pdf --mode dataset_extraction --model gpt-4.1 --
 
 # Extract hypotheses with JSON output
 python extract-o-matic.py paper.txt --mode hypothesis_extraction --model gpt-4.1 --output hypotheses.json
+
+# Extract knowledge graph with RDF output
+python extract-o-matic.py paper.pdf --mode knowledge_graph --model gpt-4.1 --output knowledge_graph.rdf
 ```
 
 ### Batch Processing
@@ -117,11 +125,13 @@ python run_pipeline.py \
 - `problem_summary` - Identify scientific objectives and research questions  
 - `dataset_extraction` - Comprehensive dataset metadata extraction
 - `hypothesis_extraction` - Scientific hypothesis extraction with Wisteria JSON
-- `experimental_protocol` - Laboratory protocol identification
+- `experimental_protocol` - Laboratory protocol identification with consolidation
 - `automated_protocol` - Robotics/AGI automation mapping
 - `classification` - Document type classification
 - `bvbrc_mapping` - Map problems to BV-BRC tools
 - `workflow_calculus` - Generate workflow calculus notation
+- `open_problems` - Extract research gaps and future work directions
+- `knowledge_graph` - Extract semantic relationships and generate RDF output
 
 ### Model Configuration
 Edit `model_servers.yaml` to configure AI models:
@@ -157,10 +167,17 @@ python extract-o-matic.py papers/ \
 - **Markdown reports** with comprehensive analysis
 - **PDF reports** for presentation/sharing
 
-### Hypothesis Extraction
+### Hypothesis & Problem Extraction
 - **Wisteria-compatible JSON** for hypothesis management
 - Structured hypothesis data with scientific rigor analysis
 - References and experimental validation plans
+- **Open problems JSON** with research gaps and future directions
+
+### Knowledge Graph Output
+- **RDF files** with semantic relationships in standard format
+- Entity-relationship triples with confidence scores
+- Compatible with graph databases and semantic web tools
+- Timestamped outputs for version tracking
 
 ## 🔧 Troubleshooting
 

@@ -7,9 +7,20 @@ This script combines the best features from multiple extraction scripts:
 - Rich UI and progress tracking from make_v21.py
 - Workflow extraction prompts from new_extract_v3.py
 - Workflow Calculus notation from l33_process_summary_to_workflow.py
+- Knowledge graph extraction from graph-o-matic.py (graph-o-matic.py is now deprecated)
+
+Features:
+- 11 extraction modes including new knowledge_graph mode
+- Enhanced experimental_protocol mode with post-processing consolidation
+- RDF output generation for knowledge graphs
+- Semantic relationship extraction with confidence scoring
+- Open problems extraction with structured JSON output
+- Parallel processing and batch mode support
 
 Usage:
     python extract-o-matic.py input_file [options]
+    python extract-o-matic.py paper.pdf --mode knowledge_graph --model gpt-4 --output graph.rdf
+    python extract-o-matic.py paper.txt --mode experimental_protocol --model gpt-4 --output protocols.txt
 """
 
 import os
@@ -75,6 +86,7 @@ class ExtractionMode(Enum):
     DATASET_EXTRACTION = "dataset_extraction"
     HYPOTHESIS_EXTRACTION = "hypothesis_extraction"
     OPEN_PROBLEMS = "open_problems"
+    KNOWLEDGE_GRAPH = "knowledge_graph"
 
 @dataclass
 class ModelConfig:
@@ -325,6 +337,8 @@ class ExtractOMatic:
             return self._get_hypothesis_extraction_prompt(chunk_text, chunk_idx, total_chunks)
         elif mode == ExtractionMode.OPEN_PROBLEMS:
             return self._get_open_problems_prompt(chunk_text, chunk_idx, total_chunks)
+        elif mode == ExtractionMode.KNOWLEDGE_GRAPH:
+            return self._get_knowledge_graph_prompt(chunk_text, chunk_idx, total_chunks)
         else:
             raise ValueError(f"Unknown extraction mode: {mode}")
     
@@ -728,6 +742,195 @@ If no open problems are identified, respond with "No open problems identified in
 
 Text:
 {chunk_text}"""
+    
+    def _get_knowledge_graph_prompt(self, chunk_text: str, chunk_idx: int, total_chunks: int) -> str:
+        """Generate knowledge graph extraction prompt for RDF output."""
+        return f"""Please analyze the following scientific text (part {chunk_idx + 1} of {total_chunks}) and extract a knowledge graph representing the key entities, relationships, and concepts mentioned.
+
+**CRITICAL REQUIREMENTS:**
+1. **Extract ALL entities**: Identify genes, proteins, organisms, methods, tools, databases, diseases, phenotypes, pathways, compounds, etc.
+2. **Extract relationships**: Identify how entities relate to each other (e.g., "gene encodes protein", "protein interacts with protein", "method analyzes data")
+3. **Use standard terminology**: When possible, use standard names and identifiers from relevant ontologies/databases
+4. **Provide context**: Include the experimental or analytical context for relationships
+5. **Format as structured triples**: Organize as Subject-Predicate-Object relationships
+
+**For each entity-relationship-entity triple, provide:**
+
+**ENTITY IDENTIFICATION:**
+- **Subject**: The source entity (gene, protein, organism, method, etc.)
+- **Predicate**: The relationship type (encodes, interacts_with, analyzes, regulates, etc.)
+- **Object**: The target entity
+- **Context**: Experimental or analytical context for this relationship
+- **Evidence**: Supporting evidence from the text
+- **Confidence**: High/Medium/Low based on how explicitly stated in the text
+
+**ENTITY TYPES TO EXTRACT:**
+- **Biological entities**: genes, proteins, RNA, DNA sequences, organisms, cell types, tissues
+- **Chemical entities**: compounds, drugs, metabolites, substrates
+- **Phenotypic entities**: diseases, symptoms, traits, phenotypes
+- **Methodological entities**: experimental methods, computational tools, databases, algorithms
+- **Data entities**: datasets, measurements, results, statistics
+- **Conceptual entities**: pathways, processes, functions, mechanisms
+
+**RELATIONSHIP TYPES TO EXTRACT:**
+- **Biological relationships**: encodes, regulates, interacts_with, binds_to, catalyzes
+- **Methodological relationships**: uses, analyzes, measures, compares, validates
+- **Causal relationships**: causes, leads_to, results_in, affects, influences
+- **Structural relationships**: part_of, contains, located_in, composed_of
+- **Functional relationships**: participates_in, involved_in, required_for, activates, inhibits
+
+**OUTPUT FORMAT:**
+For each relationship, use this exact structure:
+
+**TRIPLE #:** [Sequential number]
+- **Subject:** [Entity name] (Type: [entity type])
+- **Predicate:** [Relationship type]
+- **Object:** [Entity name] (Type: [entity type])
+- **Context:** [Experimental/analytical context]
+- **Evidence:** [Supporting text from the document]
+- **Confidence:** [High/Medium/Low]
+- **Source:** [Location in text where this relationship was identified]
+
+**IMPORTANT NOTES:**
+- Focus on factual relationships explicitly stated or strongly implied in the text
+- Include both direct experimental findings and methodological relationships
+- For ambiguous relationships, mark confidence as Low but still include them
+- Use standardized entity names when possible (e.g., official gene symbols, standard method names)
+- Include quantitative relationships when measurements are provided
+- Consider temporal relationships (before/after, during, following)
+
+Text:
+{chunk_text}"""
+    
+    def _consolidate_experimental_protocols(self, results: List[str]) -> List[str]:
+        """Consolidate experimental protocol results and remove 'no protocol found' messages."""
+        if self.config.mode != ExtractionMode.EXPERIMENTAL_PROTOCOL:
+            return results
+            
+        # Combine all results into a single text
+        combined_results = "\n\n".join(results)
+        
+        # Create consolidation prompt
+        consolidation_prompt = f"""Please analyze the following experimental protocol extractions from different sections of a research paper and create a consolidated, coherent summary of all unique protocols mentioned.
+
+Your tasks:
+1. Remove any lines that say "No experimental protocols identified" or similar
+2. Combine duplicate or very similar protocols into single entries
+3. Use standard protocol names when possible
+4. Organize protocols in a logical order (e.g., sample preparation, molecular techniques, analytical methods)
+5. Return results as a clean, consolidated bulleted list
+
+Here are the protocol extractions to consolidate:
+
+{combined_results}
+
+Please provide a consolidated summary of all unique experimental protocols mentioned across all sections:"""
+
+        try:
+            self.console.print("🔄 Consolidating experimental protocols...")
+            consolidated_result = self._call_api(consolidation_prompt)
+            return [consolidated_result]
+        except Exception as e:
+            self.console.print(f"⚠️  Failed to consolidate protocols: {e}")
+            return results
+    
+    def _convert_to_rdf(self, knowledge_graph_text: str, source_file: str) -> str:
+        """Convert knowledge graph text to RDF format."""
+        self.console.print(f"🔄 Converting to RDF format for {Path(source_file).name}")
+        
+        # Basic RDF structure
+        source_name = Path(source_file).stem
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        rdf_header = f"""@prefix : <http://example.org/extract-o-matic/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix bio: <http://purl.obolibrary.org/obo/> .
+@prefix dc: <http://purl.org/dc/elements/1.1/> .
+
+# Knowledge Graph extracted from {source_name}
+# Generated on {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+:document_{source_name} rdf:type :Document ;
+    dc:source "{source_file}" ;
+    dc:created "{datetime.now().isoformat()}" ;
+    :extractedBy "extract-o-matic" .
+
+"""
+        
+        # Convert knowledge graph text to RDF triples
+        # This is a simplified conversion - in practice, you'd want more sophisticated parsing
+        rdf_triples = []
+        lines = knowledge_graph_text.split('\n')
+        entity_counter = 0
+        
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                # Simple pattern matching for entities and relationships
+                if '→' in line or '->' in line:
+                    # Parse relationship patterns
+                    separator = '→' if '→' in line else '->'
+                    parts = line.split(separator)
+                    if len(parts) == 2:
+                        subject = parts[0].strip()
+                        predicate_object = parts[1].strip()
+                        
+                        # Clean and create RDF-safe identifiers
+                        subject_id = self._to_rdf_identifier(subject)
+                        
+                        # Create triple
+                        rdf_triples.append(f":entity_{subject_id} rdfs:label \"{subject}\" .")
+                        rdf_triples.append(f":entity_{subject_id} :relatedTo \"{predicate_object}\" .")
+                        entity_counter += 1
+                
+                elif ':' in line:
+                    # Parse attribute patterns
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        entity = parts[0].strip()
+                        attribute = parts[1].strip()
+                        
+                        entity_id = self._to_rdf_identifier(entity)
+                        rdf_triples.append(f":entity_{entity_id} rdfs:label \"{entity}\" .")
+                        rdf_triples.append(f":entity_{entity_id} :hasProperty \"{attribute}\" .")
+                        entity_counter += 1
+        
+        # Combine header and triples
+        rdf_content = rdf_header + '\n'.join(rdf_triples) + '\n'
+        return rdf_content
+
+    def _to_rdf_identifier(self, text: str) -> str:
+        """Convert text to RDF-safe identifier."""
+        import re
+        # Remove special characters and replace spaces with underscores
+        identifier = re.sub(r'[^\w\s-]', '', text)
+        identifier = re.sub(r'\s+', '_', identifier)
+        identifier = identifier.lower()
+        return identifier[:50]  # Limit length
+
+    def _save_rdf_file(self, rdf_content: str, source_file: str) -> None:
+        """Save RDF content to file."""
+        source_name = Path(source_file).stem
+        model_name = self.config.model_config.shortname
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Determine output file path
+        if self.config.output_file.endswith('/'):
+            output_file = Path(self.config.output_file) / f"knowledge_graph_{source_name}_{model_name}_{timestamp}.rdf"
+        else:
+            output_file = Path(f"knowledge_graph_{source_name}_{model_name}_{timestamp}.rdf")
+        
+        try:
+            # Save RDF file
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(rdf_content)
+            
+            self.console.print(f"✅ Saved knowledge graph RDF to {output_file}")
+            
+        except Exception as e:
+            self.console.print(f"❌ Failed to save RDF file: {e}")
     
     def _call_api(self, prompt: str) -> str:
         """Make API call to extract information."""
@@ -1648,10 +1851,30 @@ Here is the text:
         if self.config.worker_count > 1:
             # Parallel processing
             self.console.print(f"🔄 Using {self.config.worker_count} workers for parallel processing")
-            return self._process_chunks_parallel(chunks)
+            results = self._process_chunks_parallel(chunks)
         else:
             # Sequential processing
-            return self._process_chunks_sequential(chunks)
+            results = self._process_chunks_sequential(chunks)
+        
+        # Consolidate experimental protocols if in experimental_protocol mode
+        if self.config.mode == ExtractionMode.EXPERIMENTAL_PROTOCOL:
+            results = self._consolidate_experimental_protocols(results)
+        
+        # Process knowledge graph if in knowledge_graph mode
+        if self.config.mode == ExtractionMode.KNOWLEDGE_GRAPH:
+            # Combine all chunk results
+            combined_result = "\n\n".join(results)
+            
+            # Convert to RDF format
+            rdf_content = self._convert_to_rdf(combined_result, self.config.input_file)
+            
+            # Save RDF file
+            self._save_rdf_file(rdf_content, self.config.input_file)
+            
+            # Return the knowledge graph text
+            results = [combined_result]
+        
+        return results
     
     def _process_chunks_sequential(self, chunks: List[str]) -> List[str]:
         """Process chunks sequentially (original behavior)."""
@@ -2112,6 +2335,7 @@ Extraction Modes:
   dataset_extraction - Extract comprehensive information about datasets used, produced, or cited
   hypothesis_extraction - Extract hypotheses and generate Wisteria-compatible JSON files
   open_problems - Extract open problems and research gaps with Wisteria-compatible JSON files
+  knowledge_graph - Extract semantic relationships and convert to RDF format
 
 Examples:
   python extract-o-matic.py paper.txt --mode workflow --model scout
@@ -2127,6 +2351,8 @@ Examples:
   python extract-o-matic.py papers/ --mode hypothesis_extraction --model scout --output hypotheses_dir/
   python extract-o-matic.py paper.txt --mode open_problems --model scout --output open_problems.json
   python extract-o-matic.py papers/ --mode open_problems --model scout --output open_problems_dir/
+  python extract-o-matic.py paper.txt --mode knowledge_graph --model scout --output knowledge_graph.rdf
+  python extract-o-matic.py papers/ --mode knowledge_graph --model scout --output knowledge_graphs_dir/
   python extract-o-matic.py paper.txt --mode workflow --require-problem --model scout
   python extract-o-matic.py papers/ --mode workflow --require-tool --model scout
   python extract-o-matic.py paper.txt --mode workflow --model scout --workers 4
