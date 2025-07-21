@@ -2065,22 +2065,8 @@ Here is the text:
     def _save_wisteria_json(self, json_data: Dict[str, Any], source_file: str):
         """Save hypothesis data in Wisteria-compatible JSON format."""
         try:
-            # Generate output filename
-            source_name = Path(source_file).stem
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_name = self.config.model_config.shortname
-            
-            if self.config.batch_mode:
-                # For batch mode, create individual files in output directory
-                output_dir = Path(self.config.output_file)
-                output_dir.mkdir(parents=True, exist_ok=True)
-                output_file = output_dir / f"hypotheses_{source_name}_{model_name}_{timestamp}.json"
-            else:
-                # For single file mode, use specified output or generate name
-                if self.config.output_file.endswith('.json'):
-                    output_file = Path(self.config.output_file)
-                else:
-                    output_file = Path(f"hypotheses_{source_name}_{model_name}_{timestamp}.json")
+            # Use the specified output file directly
+            output_file = Path(self.config.output_file)
             
             # Save JSON file
             with open(output_file, 'w', encoding='utf-8') as f:
@@ -2430,22 +2416,8 @@ Here is the text:
     def _save_open_problems_wisteria_json(self, json_data: Dict[str, Any], source_file: str):
         """Save open problems data in Wisteria-compatible JSON format."""
         try:
-            # Generate output filename
-            source_name = Path(source_file).stem
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_name = self.config.model_config.shortname
-            
-            if self.config.batch_mode:
-                # For batch mode, create individual files in output directory
-                output_dir = Path(self.config.output_file)
-                output_dir.mkdir(parents=True, exist_ok=True)
-                output_file = output_dir / f"open_problems_{source_name}_{model_name}_{timestamp}.json"
-            else:
-                # For single file mode, use specified output or generate name
-                if self.config.output_file.endswith('.json'):
-                    output_file = Path(self.config.output_file)
-                else:
-                    output_file = Path(f"open_problems_{source_name}_{model_name}_{timestamp}.json")
+            # Use the specified output file directly
+            output_file = Path(self.config.output_file)
             
             # Save JSON file
             with open(output_file, 'w', encoding='utf-8') as f:
@@ -2883,6 +2855,12 @@ Here is the text:
     
     def _save_results_to_file(self):
         """Save results to a single output file."""
+        # Skip overwriting for modes that save their own JSON files
+        if self.config.mode in [ExtractionMode.HYPOTHESIS_EXTRACTION, ExtractionMode.OPEN_PROBLEMS]:
+            # JSON files were already saved by dedicated functions, don't overwrite
+            self.console.print(f"✅ Results saved to {self.config.output_file}")
+            return
+            
         # Combine all results
         combined_result = "\n\n".join(self.results)
         
@@ -3129,8 +3107,8 @@ Examples:
                        help='Model configuration file (default: model_servers.yaml)')
     parser.add_argument('--chunk-size', type=int, default=3000, 
                        help='Chunk size in tokens/characters (default: 3000)')
-    parser.add_argument('--max-tokens', type=int, default=2000, 
-                       help='Maximum tokens per API response (default: 2000)')
+    parser.add_argument('--max-tokens', type=int, default=20000, 
+                       help='Maximum tokens per API response (default: 20000)')
     parser.add_argument('--temperature', type=float, default=0.0, 
                        help='API temperature (default: 0.0)')
     parser.add_argument('--character-limit', type=int, default=100000, 
