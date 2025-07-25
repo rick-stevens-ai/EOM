@@ -1,0 +1,68 @@
+Workflow Calculus (v 0.9)
+==============================
+
+1  Lexical atoms
+----------------
+• **Identifier** — `[\p{{L}}_][\p{{L}}\p{{N}}_]*`  
+• **Literal** — strings, numbers, booleans  
+• **Type** — capitalized identifier or arrow type, e.g. `Fastq`, `Bam`, `Real`, `Fastq → Bam`
+
+2  Core operators (UTF‑8)
+------------------------
+Notation | Unicode | Example | Semantics
+---------|---------|---------|----------
+Application | *(juxtaposition / `()`)* | `f x`   or  `f(x)` | Call function  
+Composition | `∘` | `(f ∘ g)(x)` | `f(g(x))`  
+Pipe | `⇒` | `x ⇒ f ⇒ g` | `g(f(x))` (left‑to‑right)  
+Parallel | `∥` | `f(x) ∥ g(x)` | run concurrently, join tuple  
+Map / Comprehension | `[f i | i ∈ S]` |  | apply to each element  
+Reduction | `⨁_S` | `⨁_{i∈S} f(i)` | fold with monoid `⨁`  
+Branch / Match | `⟂{ cond₁→A, cond₂→B }` |  | if / pattern match  
+Side‑effect | postfix `!` | `counts!` | in‑place / I ⁄ O  
+LLM / Tool call | `〈tool(params)〉` |  | dispatch via registry
+
+3  Optional typing
+------------------
+*Function type*   `f : A → B`  
+*Pipeline type*   `align : Fastq ⇒ Bam`
+
+4  Grammar (EBNF‑lite)
+----------------------
+```
+workflow   ::= step ('⇒' step)*
+step       ::= term ('∥' term)*
+term       ::= atom | '(' workflow ')' | reduction | map | branch
+atom       ::= IDENT | literal | llm_call
+reduction  ::= '⨁' '_' range
+map        ::= '[' workflow '|' IDENT '∈' set ']'
+branch     ::= '⟂{' guarded (',' guarded)* '}'
+guarded    ::= condition '→' workflow
+llm_call   ::= '〈' IDENT ('(' arglist? ')')? '〉'
+```
+
+5  Execution semantics
+----------------------
+1. **Data‑flow graph** is immutable; side‑effect nodes are explicit (`!`).  
+2. `⇒` builds an async pipeline; each node may be sync, async, or generator.  
+3. `∥` spawns tasks and joins (order preserved).  
+4. `⨁` folds with the specified monoid (default list‑concat).  
+5. `〈tool〉` resolves via a plug‑in registry to Python callables or LLM chains.
+
+6  Mini example
+---------------
+```
+reads      : Fastq
+trimmed    = reads ⇒ trim 〈Trimmomatic(ILLUMINACLIP=adapt.fa)〉
+aligned    = trimmed ⇒ align 〈Bowtie2(ref="hg38", threads=12)〉
+counts!    = aligned ⇒ count 〈HTSeq〉!
+```
+
+7  Style rules
+--------------
+* Pure functions by default; mark side‑effects.  
+* Use only UTF‑8 glyphs; no LaTeX in workflows.  
+* Favor composition and immutability.  
+* Keep identifiers short but descriptive (`trim`, `mapQ`, `plotRPKM`).  
+* Provide type hints when they add clarity, otherwise omit.
+
+(End of notation reference)
