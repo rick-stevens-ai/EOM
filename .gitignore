@@ -18,3 +18,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Configuration files
+*.yaml
+*.yml
